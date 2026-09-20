@@ -8,9 +8,10 @@ from pydantic import BaseModel, Field
 
 from .alignment import align_translation
 from .segmenter import Config, solve
+from .speakers import SpeakerError, assign_speakers
 from .terminology import TermError, review_terms
 
-app = FastAPI(title="字幕断句", version="1.5.0")
+app = FastAPI(title="字幕断句", version="1.6.0")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -77,6 +78,27 @@ class AlignRequest(BaseModel):
     translation: str = ""
 
 
+class SpeakerSegmentIn(BaseModel):
+    """当前选中的断句方案中的一段: 词范围(说话人标注据此还原段时间; line_break 不使用)。"""
+    word_range: list[int] = Field(min_length=2, max_length=2)
+    line_break: int | None = None
+
+
+class SpeakerOverrideIn(BaseModel):
+    """人工覆盖: 把第 segment 段(0 起)的标签钉死为 label(说话人名或 "unknown")。"""
+    segment: int = Field(ge=0)
+    label: str
+
+
+class SpeakerRequest(BaseModel):
+    words: list[WordIn]
+    segments: list[SpeakerSegmentIn] = Field(default_factory=list)
+    speakers: str = ""
+    change_penalty: float = Field(default=1.0, ge=0)
+    coverage_threshold: float = Field(default=0.5, ge=0, le=1)
+    overrides: list[SpeakerOverrideIn] = Field(default_factory=list)
+
+
 @app.post("/api/segment")
 def segment(req: SegmentRequest):
     cfg_fields = {k: v for k, v in req.config.items() if k in Config.__dataclass_fields__}
@@ -112,6 +134,23 @@ def align(req: AlignRequest):
             [s.model_dump() for s in req.segments],
             req.translation,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/speakers/assign")
+def speakers_assign(req: SpeakerRequest):
+    try:
+        return assign_speakers(
+            [w.model_dump() for w in req.words],
+            [s.model_dump() for s in req.segments],
+            req.speakers,
+            change_penalty=req.change_penalty,
+            coverage_threshold=req.coverage_threshold,
+            overrides=[o.model_dump() for o in req.overrides],
+        )
+    except SpeakerError as e:
+        raise HTTPException(status_code=422, detail=e.payload)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

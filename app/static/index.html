@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>字幕断句</title>
+<style>
+  :root { --bg:#14161a; --panel:#1d2026; --border:#2c313a; --fg:#e6e8eb; --dim:#9aa3af; --accent:#4f9cf9; --bad:#f97066; --ok:#34c98e; --ph:#7a5af8; --lock:#2dd4bf; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 24px; border-bottom:1px solid var(--border); font-size:18px; font-weight:600; }
+  main { display:grid; grid-template-columns: 420px 1fr; gap:16px; padding:16px 24px; align-items:start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-bottom:16px; }
+  .panel h2 { margin:0 0 10px; font-size:14px; color:var(--dim); font-weight:600; }
+  textarea { width:100%; background:#101216; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:8px; font-family:ui-monospace, Consolas, monospace; font-size:12px; resize:vertical; }
+  input[type=number], input[type=text] { width:100%; background:#101216; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:6px 8px; font-size:13px; }
+  label { display:block; font-size:12px; color:var(--dim); margin:8px 0 4px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px 12px; }
+  .row { display:flex; align-items:center; gap:8px; }
+  input[type=range] { flex:1; accent-color:var(--accent); }
+  .wval { width:38px; text-align:right; font-size:12px; color:var(--dim); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:7px 14px; cursor:pointer; font-size:13px; }
+  button.ghost { background:transparent; border:1px solid var(--border); color:var(--dim); }
+  .hint { font-size:11px; color:var(--dim); margin-top:6px; line-height:1.5; }
+  .error { color:var(--bad); font-size:13px; margin-top:8px; white-space:pre-wrap; }
+  .total { font-size:13px; color:var(--dim); margin-bottom:10px; }
+  .total b { color:var(--fg); font-size:16px; }
+  .seg { background:#101216; border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+  .seg .meta { font-size:11px; color:var(--dim); margin-bottom:6px; display:flex; gap:12px; flex-wrap:wrap; }
+  .seg .lines { text-align:center; margin:6px 0; }
+  .seg .lines div { display:inline-block; background:#000; color:#fff; font-size:16px; line-height:1.5; padding:2px 10px; border-radius:4px; margin:2px 0; }
+  .seg .cost { font-size:11px; color:var(--dim); display:flex; gap:12px; flex-wrap:wrap; border-top:1px dashed var(--border); padding-top:6px; }
+  .seg .cost b { color:var(--fg); }
+  .conflict { border:1px solid var(--bad); background:#2a1518; border-radius:8px; padding:12px 14px; }
+  .conflict h3 { margin:0 0 6px; color:var(--bad); font-size:14px; }
+  .conflict p { margin:4px 0; font-size:13px; }
+  .conflict ul { margin:6px 0 0; padding-left:18px; font-size:12px; color:var(--dim); }
+  /* 词序列与边界约束 */
+  #wordflow { font-size:12px; line-height:2.2; word-break:break-all; }
+  #wordflow .w { display:inline-block; background:#101216; border:1px solid var(--border); border-radius:4px; padding:0 5px; margin:1px 0; vertical-align:middle; }
+  #wordflow .w i { color:var(--accent); font-style:normal; margin-right:3px; }
+  #wordflow .w.ph { border-color:var(--ph); background:#1a1530; }
+  #wordflow .w.lk { border-color:var(--lock); background:#0f2a27; }
+  #wordflow .w.bad { border-color:var(--bad); background:#2a1518; }
+  #wordflow .w.lk.bad { border-color:var(--bad); background:#2a1518; box-shadow:0 0 0 1px var(--lock) inset; }
+  .gap { display:inline-block; width:16px; height:18px; vertical-align:middle; position:relative; cursor:pointer; border-radius:3px; }
+  .gap::after { content:""; position:absolute; left:50%; top:4px; bottom:4px; width:2px; transform:translateX(-50%); background:#3a4150; border-radius:1px; }
+  .gap:hover { background:#23272f; }
+  .gap.must::after { background:var(--bad); width:3px; top:2px; bottom:2px; box-shadow:0 0 4px var(--bad); }
+  .gap.no::after { background:var(--ok); width:12px; height:3px; top:50%; bottom:auto; transform:translate(-50%,-50%); border-radius:2px; box-shadow:0 0 4px var(--ok); }
+  .gap.locked { width:8px; cursor:not-allowed; }
+  .gap.locked::after { background:var(--ph); opacity:.55; }
+  .gap.clash { background:#3a1d20; box-shadow:0 0 0 1px var(--bad); animation:pulse 1s infinite; }
+  .gap.clash::after { background:var(--bad); }
+  @keyframes pulse { 50% { opacity:.45; } }
+  .legend { display:flex; gap:16px; align-items:center; font-size:11px; color:var(--dim); margin-top:8px; flex-wrap:wrap; }
+  .legend .gap { cursor:default; }
+  .legend .gap:hover { background:transparent; }
+  /* 备选方案 */
+  .alts { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; }
+  .alts button { padding:5px 12px; font-size:12px; }
+  .alts button.alt { background:transparent; border:1px solid var(--border); color:var(--dim); }
+  .alts button.alt.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .alts .altinfo { font-size:11px; color:var(--dim); margin-left:4px; }
+  .alts .nomore { font-size:12px; color:var(--dim); border:1px dashed var(--border); border-radius:6px; padding:5px 10px; }
+  /* 当前方案的分段断点标记(词序列预览) */
+  .gap.bp::after { background:var(--accent); width:3px; top:2px; bottom:2px; box-shadow:0 0 4px var(--accent); }
+  .gap.bp.diff::after { background:#f5a524; width:3px; top:1px; bottom:1px; box-shadow:0 0 5px #f5a524; }
+  .gap.bp-missing::after { background:transparent; width:8px; height:8px; top:50%; bottom:auto; border:1.5px solid var(--accent); border-radius:50%; transform:translate(-50%,-50%); }
+  /* 锁定段边界(青色竖线)与冲突锁(红闪) */
+  .gap.lkend::after { background:var(--lock); width:3px; top:1px; bottom:1px; box-shadow:0 0 5px var(--lock); }
+  .gap.lkend.clash::after { background:var(--bad); box-shadow:0 0 6px var(--bad); animation:pulse 1s infinite; }
+  .seg.diffbreak { border-color:#f5a524; box-shadow:0 0 0 1px #f5a524 inset; }
+  .seg.locked { border-color:var(--lock); box-shadow:0 0 0 1px var(--lock) inset; }
+  .seg .badtag { color:#f5a524; font-size:11px; font-weight:600; }
+  .seg .locktag { color:var(--lock); font-size:11px; font-weight:600; }
+  button.lockbtn { background:transparent; border:1px solid var(--border); color:var(--dim); padding:2px 9px; font-size:11px; margin-left:auto; }
+  button.lockbtn.on { border-color:var(--lock); color:var(--lock); }
+  .locklist { margin:8px 0 2px; padding:0; list-style:none; font-size:12px; }
+  .locklist li { display:flex; align-items:center; gap:8px; background:#101216; border:1px solid var(--border); border-radius:6px; padding:5px 9px; margin-top:6px; }
+  .locklist li.badlock { border-color:var(--bad); background:#2a1518; }
+  .locklist .lkname { color:var(--lock); font-weight:600; }
+  .locklist li.badlock .lkname { color:var(--bad); }
+  .locklist button { padding:2px 9px; font-size:11px; background:transparent; border:1px solid var(--border); color:var(--dim); }
+  .locknote { color:var(--dim); font-size:11px; margin-top:6px; line-height:1.5; }
+  .altlegend { display:flex; gap:14px; align-items:center; font-size:11px; color:var(--dim); margin:2px 0 10px; flex-wrap:wrap; }
+  /* 术语一致性审校 */
+  mark.tm { background:rgba(52,201,142,.28); color:var(--fg); border:1px solid rgba(52,201,142,.7); border-radius:3px; padding:0 1px; }
+  mark.tm.var { background:rgba(249,112,102,.26); border-color:rgba(249,112,102,.75); }
+  .trsum { display:flex; gap:10px; flex-wrap:wrap; font-size:12px; margin:8px 0; }
+  .trsum .chip { background:#101216; border:1px solid var(--border); border-radius:6px; padding:4px 10px; color:var(--dim); }
+  .trsum .chip b { color:var(--fg); }
+  .trsum .chip.ok b { color:var(--ok); }
+  .trsum .chip.bad b { color:var(--bad); }
+  .termtbl { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
+  .termtbl th, .termtbl td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--border); color:var(--dim); }
+  .termtbl th { font-weight:600; }
+  .termtbl td b { color:var(--fg); font-weight:600; }
+  .termtbl .v { color:var(--bad); }
+  .trlist { margin:6px 0 0; padding:0; list-style:none; font-size:12px; }
+  .trlist li { background:#101216; border:1px solid var(--border); border-radius:6px; padding:6px 10px; margin-top:6px; cursor:pointer; }
+  .trlist li:hover { border-color:var(--accent); }
+  .trlist .vr { color:var(--bad); font-weight:600; }
+  .trlist .ar { color:var(--ok); font-weight:600; }
+  .seg.flash { animation:segflash 1.4s ease; }
+  @keyframes segflash { 0%, 60% { box-shadow:0 0 0 2px var(--accent) inset; } 100% { box-shadow:0 0 0 0 transparent inset; } }
+  /* 译文对齐 */
+  .ag { background:#101216; border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+  .ag .meta { font-size:11px; color:var(--dim); margin-bottom:6px; display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  .ag .amap { font-weight:600; padding:1px 8px; border-radius:4px; font-size:11px; border:1px solid; }
+  .ag .amap.k11 { color:var(--ok); }
+  .ag .amap.k12 { color:var(--accent); }
+  .ag .amap.k21 { color:var(--ph); }
+  .ag .aline { font-size:13px; margin:3px 0; display:flex; gap:8px; line-height:1.5; }
+  .ag .aline .tag { color:var(--dim); font-size:11px; flex:none; padding-top:2px; }
+  .ag .acost { font-size:11px; color:var(--dim); display:flex; gap:12px; flex-wrap:wrap; border-top:1px dashed var(--border); padding-top:6px; margin-top:6px; }
+  .ag .acost b { color:var(--fg); }
+  .ag .pm { color:#f5a524; }
+  .anotice { border:1px solid #f5a524; background:#2a2115; border-radius:8px; padding:12px 14px; font-size:13px; }
+  .anotice h3 { margin:0 0 6px; color:#f5a524; font-size:14px; }
+  .anotice p { margin:4px 0; }
+  button:disabled { opacity:.45; cursor:default; }
+</style>
+</head>
+<body>
+<header>字幕断句 · 全局动态规划</header>
+<main>
+  <div>
+    <div class="panel">
+      <h2>词序列(带时间戳)</h2>
+      <textarea id="words" rows="8" spellcheck="false" placeholder="00:00:01.000 00:00:01.400 我们
+00:00:01.400 00:00:01.800 今天
+..."></textarea>
+      <div class="hint">每行一个词:<code>开始 结束 文本</code>,时间支持 <code>HH:MM:SS.mmm</code> 或秒数;也可直接粘贴 JSON 数组 [{"text","start","end"}]。</div>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost" id="fillExample" type="button">填入示例</button>
+      </div>
+      <div class="error" id="parseError"></div>
+    </div>
+
+    <div class="panel">
+      <h2>词序列 · 边界约束</h2>
+      <div id="wordflow"><span class="hint">输入词序列后,在此点击词间间隙设置边界约束。</span></div>
+      <div class="legend">
+        <span class="row" style="gap:4px"><span class="gap must"></span>必须断开</span>
+        <span class="row" style="gap:4px"><span class="gap no"></span>禁止断开</span>
+        <span class="row" style="gap:4px"><span class="gap lkend"></span>锁定段边界</span>
+        <span class="row" style="gap:4px"><span class="gap locked"></span>短语内部(不可设置)</span>
+      </div>
+      <div class="hint">点击词间间隙依次切换:必须断开 → 禁止断开 → 清除。约束随请求提交并作为硬条件生效;不可拆短语内部的间隙不可设置。锁定段在右侧预览中点击🔒按钮设置,锁定后重算只优化其余区间。</div>
+    </div>
+
+    <div class="panel">
+      <h2>不可拆短语</h2>
+      <textarea id="phrases" rows="3" spellcheck="false" placeholder="3-6
+人工智能"></textarea>
+      <div class="hint">每行一个:词下标区间(如 <code>3-6</code>,含端点)或短语原文(自动匹配首个连续出现)。下标见上方词序列预览。</div>
+    </div>
+
+    <div class="panel">
+      <h2>镜头切点</h2>
+      <textarea id="shots" rows="3" spellcheck="false" placeholder="00:00:04.500
+8.2"></textarea>
+      <div class="hint">每行一个时间点,格式同词序列时间。</div>
+    </div>
+
+    <div class="panel">
+      <h2>术语表(一致性审校)</h2>
+      <textarea id="glossary" rows="5" spellcheck="false" placeholder="Wi-Fi = WiFi, wifi, WI-FI
+人工智能 = 人工智慧"></textarea>
+      <div class="hint">每行一个术语:<code>规范写法 = 变体1 / 变体2…</code>(分隔符支持 <code>=</code> 或 <code>:</code>,变体可用逗号/分号/竖线分隔,空白变体忽略);也接受 JSON 数组 <code>[{"canonical","variants"}]</code>。匹配先做 NFKC 与大小写归一,术语可跨词但不跨字幕段。</div>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost" id="fillTermsExample" type="button">填入示例术语</button>
+      </div>
+      <div class="error" id="reviewError"></div>
+    </div>
+
+    <div class="panel">
+      <h2>约束与权重</h2>
+      <div class="grid2">
+        <div><label>单行最大字符</label><input type="number" id="max_chars_per_line" value="42" min="5" max="200"></div>
+        <div><label>最大阅读速度(字/秒)</label><input type="number" id="max_cps" value="20" min="1" max="60" step="0.5"></div>
+        <div><label>最短时长(秒)</label><input type="number" id="min_duration" value="0.8" min="0" step="0.1"></div>
+        <div><label>最长时长(秒)</label><input type="number" id="max_duration" value="7" min="0.5" step="0.1"></div>
+      </div>
+      <label>权重 · 镜头切点偏差</label>
+      <div class="row"><input type="range" id="w_shot" min="0" max="5" step="0.1" value="1"><span class="wval" id="w_shot_v">1.0</span></div>
+      <label>权重 · 行长不均</label>
+      <div class="row"><input type="range" id="w_imbalance" min="0" max="5" step="0.1" value="1"><span class="wval" id="w_imbalance_v">1.0</span></div>
+      <label>权重 · 不自然停顿</label>
+      <div class="row"><input type="range" id="w_pause" min="0" max="5" step="0.1" value="1"><span class="wval" id="w_pause_v">1.0</span></div>
+      <label>备选方案数量(1–5,K-best)</label>
+      <div class="row"><input type="number" id="alternatives" value="1" min="1" max="5" step="1" style="width:80px"><span class="hint" style="margin-top:0">大于 1 时预览中可在总代价从低到高的备选方案间切换。</span></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel" id="reviewPanel" style="display:none">
+      <h2>术语一致性审校(当前选中方案)</h2>
+      <div id="reviewResult"></div>
+    </div>
+
+    <div class="panel">
+      <h2>断句预览</h2>
+      <div class="hint" style="margin-bottom:8px">点击段落右上角 <b>🔒 锁定</b> 可固定该段的词范围与内部换行;之后调整权重、边界约束或备选数量时,后端只优化其余区间,跨区间的 K-best 组合仍按全局总代价排序、按完整断点序列去重。再次点击可解锁。</div>
+      <div id="result"><span class="hint">粘贴词序列后自动计算。</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>译文对齐(当前选中方案)</h2>
+      <textarea id="translation" rows="6" spellcheck="false" placeholder="按行粘贴译文,每行一条,空行忽略"></textarea>
+      <div class="hint">对当前选中的断句方案做单调动态规划对齐:每组 1 个源段对 1～2 行译文,或相邻 2 个源段对 1 行译文;代价为两侧去空白字符占比差,句末标点类别不一致 +0.15;同分依次优先 1:1、源侧结束更早的路径。源方案或译文变化时自动重算。</div>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost" id="fillTransExample" type="button">填入示例译文</button>
+        <button class="ghost" id="downloadSrt" type="button" disabled>下载双语 SRT</button>
+      </div>
+      <div id="alignResult" style="margin-top:10px"><span class="hint">粘贴译文后自动对齐。</span></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function parseTime(s) {
+  s = s.trim();
+  if (/^\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+  const m = s.match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})$/);
+  if (!m) throw new Error("无法解析时间: " + s);
+  const [, h, mm, ss, ms] = m;
+  return (parseInt(h || 0) * 3600) + parseInt(mm) * 60 + parseInt(ss) + parseInt(ms.padEnd(3, "0")) / 1000;
+}
+
+function parseWords(text) {
+  text = text.trim();
+  if (!text) return [];
+  if (text.startsWith("[")) {
+    const arr = JSON.parse(text);
+    return arr.map(o => ({ text: String(o.text), start: +o.start, end: +o.end }));
+  }
+  return text.split("\n").filter(l => l.trim()).map((line, i) => {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3) throw new Error(`第 ${i + 1} 行格式错误: ${line}`);
+    return { start: parseTime(parts[0]), end: parseTime(parts[1]), text: parts.slice(2).join(" ") };
+  });
+}
+
+function parseShots(text) {
+  return text.split("\n").map(l => l.trim()).filter(Boolean).map(parseTime);
+}
+
+function parsePhrases(text, words) {
+  const out = [];
+  text.split("\n").map(l => l.trim()).filter(Boolean).forEach(line => {
+    const m = line.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      const a = +m[1], b = +m[2];
+      if (a > b || b >= words.length) throw new Error(`短语区间越界: ${line}`);
+      out.push(Array.from({ length: b - a + 1 }, (_, k) => a + k));
+    } else {
+      const toks = line.split(/\s+/);
+      outer: for (let i = 0; i + toks.length <= words.length; i++) {
+        for (let k = 0; k < toks.length; k++)
+          if (words[i + k].text !== toks[k]) continue outer;
+        out.push(Array.from({ length: toks.length }, (_, k) => i + k));
+        return;
+      }
+      throw new Error(`短语未匹配到连续词序列: ${line}`);
+    }
+  });
+  return out;
+}
+
+function fmt(t) {
+  const m = Math.floor(t / 60), s = (t % 60).toFixed(2).padStart(5, "0");
+  return `${String(m).padStart(2, "0")}:${s}`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// 边界约束状态: 词间隙下标 k(词 k-1 与词 k 之间) -> "must" | "no"
+const boundaryState = new Map();
+
+// 锁定段状态: "wa-wb" -> {wa, wb, lb(内部换行词间隙, null=单行)}
+// 仅由用户在预览中锁定/解锁维护; 重算(含冲突)后保留, 词序列变化导致失效时
+// 由后端返回冲突, 页面高亮并保留状态供修正。
+const lockMap = new Map();
+const lockKey = (wa, wb) => `${wa}-${wb}`;
+
+function clearLockMarks() {
+  document.querySelectorAll("#wordflow .w.lk").forEach(w => {
+    w.classList.remove("lk");
+    w.classList.remove("bad");
+  });
+  document.querySelectorAll("#wordflow .gap.lkend").forEach(g => {
+    g.classList.remove("lkend");
+    g.classList.remove("clash");
+  });
+}
+
+function markLocks(badKey) {
+  clearLockMarks();
+  const ends = new Set();
+  for (const lk of lockMap.values()) {
+    for (let i = lk.wa; i <= lk.wb; i++) {
+      const w = document.querySelector(`#wordflow [data-w="${i}"]`);
+      if (w) w.classList.add("lk");
+    }
+    if (lk.wa > 0) ends.add(lk.wa);
+    if (lk.wb + 1 < (lastWordCount || 0)) ends.add(lk.wb + 1);
+  }
+  for (const k of ends) {
+    const g = document.querySelector(`#wordflow [data-gap="${k}"]`);
+    if (g) g.classList.add("lkend");
+  }
+  if (badKey && lockMap.has(badKey)) {
+    const lk = lockMap.get(badKey);
+    for (let i = lk.wa; i <= lk.wb; i++) {
+      const w = document.querySelector(`#wordflow [data-w="${i}"]`);
+      if (w) w.classList.add("bad");
+    }
+    for (const k of [lk.wa, lk.wb + 1]) {
+      const g = document.querySelector(`#wordflow [data-gap="${k}"]`);
+      if (g) g.classList.add("clash");
+    }
+  }
+}
+let lastWordCount = 0;
+
+function phraseInnerGaps(phrases) {
+  const inner = new Set();
+  for (const ph of phrases)
+    for (let k = ph[0] + 1; k <= ph[ph.length - 1]; k++) inner.add(k);
+  return inner;
+}
+
+function renderWordFlow(words, phrases) {
+  const inner = phraseInnerGaps(phrases);
+  const inPh = new Set();
+  for (const ph of phrases) ph.forEach(i => inPh.add(i));
+  // 清理失效约束: 越界或落入短语内部
+  for (const k of [...boundaryState.keys()])
+    if (k < 1 || k >= words.length || inner.has(k)) boundaryState.delete(k);
+  const el = $("wordflow");
+  if (!words.length) {
+    el.innerHTML = '<span class="hint">输入词序列后,在此点击词间间隙设置边界约束。</span>';
+    lastWordCount = 0;
+    clearLockMarks();
+    return;
+  }
+  let html = "";
+  words.forEach((w, i) => {
+    html += `<span class="w${inPh.has(i) ? " ph" : ""}" data-w="${i}"><i>${i}</i>${escapeHtml(w.text)}</span>`;
+    if (i + 1 < words.length) {
+      const k = i + 1;
+      if (inner.has(k)) {
+        html += `<span class="gap locked" title="不可拆短语内部,不能设置边界约束"></span>`;
+      } else {
+        const st = boundaryState.get(k) || "";
+        const tip = st === "must" ? "必须断开 · 点击切换为禁止断开"
+                  : st === "no" ? "禁止断开 · 点击清除" : "点击设置必须断开";
+        html += `<span class="gap ${st}" data-gap="${k}" title="${tip}"></span>`;
+      }
+    }
+  });
+  el.innerHTML = html;
+  lastWordCount = words.length;
+  markLocks();
+}
+
+$("wordflow").addEventListener("click", e => {
+  const g = e.target.closest("[data-gap]");
+  if (!g) return;
+  const k = +g.dataset.gap;
+  const cur = boundaryState.get(k);
+  if (!cur) boundaryState.set(k, "must");
+  else if (cur === "must") boundaryState.set(k, "no");
+  else boundaryState.delete(k);
+  schedule();
+});
+
+$("result").addEventListener("click", e => {
+  const alt = e.target.closest("[data-alt]");
+  if (alt && altPlans) {
+    const i = +alt.dataset.alt;
+    if (i !== altIndex) {
+      clearReview();
+      renderPlan(i);
+      scheduleReview();
+      scheduleAlign();
+    }
+    return;
+  }
+  const ulbtn = e.target.closest("[data-unlocklock]");
+  if (ulbtn) {
+    lockMap.delete(ulbtn.dataset.unlocklock);
+    schedule();
+    return;
+  }
+  const lbtn = e.target.closest("[data-lock]");
+  if (lbtn) {
+    const [wa, wb] = lbtn.dataset.lock.split("-").map(Number);
+    if (lbtn.dataset.locked === "1") {
+      lockMap.delete(lockKey(wa, wb));
+    } else {
+      const lb = lbtn.dataset.lb === "" ? null : parseInt(lbtn.dataset.lb, 10);
+      lockMap.set(lockKey(wa, wb), { wa, wb, lb: Number.isInteger(lb) ? lb : null });
+    }
+    schedule();
+  }
+});
+
+let timer = null;
+function schedule() { clearTimeout(timer); timer = setTimeout(run, 250); }
+
+async function run() {
+  $("parseError").textContent = "";
+  let words;
+  try {
+    words = parseWords($("words").value);
+  } catch (e) {
+    $("parseError").textContent = e.message;
+    $("result").innerHTML = "";
+    renderWordFlow([], []);
+    return;
+  }
+  // 短语/切点解析失败时保留词序列与边界标记,仅提示错误
+  let phrases = [], shots = [];
+  try {
+    phrases = parsePhrases($("phrases").value, words);
+    shots = parseShots($("shots").value);
+  } catch (e) {
+    $("parseError").textContent = e.message;
+  }
+  renderWordFlow(words, phrases);
+  if (!words.length) { $("result").innerHTML = '<span class="hint">粘贴词序列后自动计算。</span>'; clearReview(); return; }
+  lastWords = words;
+
+  const cfg = {};
+  for (const k of ["max_chars_per_line", "max_cps", "min_duration", "max_duration", "w_shot", "w_imbalance", "w_pause"])
+    cfg[k] = parseFloat($(k).value);
+
+  const boundaries = [...boundaryState.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([k, t]) => ({ index: k, type: t === "must" ? "must_break" : "no_break" }));
+
+  const locks = [...lockMap.values()]
+    .sort((a, b) => a.wa - b.wa || a.wb - b.wb)
+    .map(lk => ({ word_range: [lk.wa, lk.wb], line_break: lk.lb }));
+
+  let alternatives = parseInt($("alternatives").value, 10);
+  if (!Number.isFinite(alternatives) || alternatives < 1) alternatives = 1;
+  if (alternatives > 5) alternatives = 5;
+  $("alternatives").value = alternatives;
+
+  const res = await fetch("/api/segment", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ words, phrases, shots, boundaries, locks, alternatives, config: cfg }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    clearReview();
+    $("result").innerHTML = `<div class="error">${escapeHtml(String(data.detail || "请求失败"))}</div>`;
+    return;
+  }
+  render(data);
+  scheduleReview();
+  scheduleAlign();
+}
+
+// 当前响应与选中的方案名次
+let curData = null;
+let altPlans = null;
+let altIndex = 0;
+
+function planBreakSet(segments) {
+  // 词间隙断点集合: 每段首词下标(0 除外)即其左侧间隙
+  const set = new Set();
+  for (const s of segments) {
+    const k = s.word_range[0];
+    if (k > 0) set.add(k);
+  }
+  return set;
+}
+
+function clearBreakMarks() {
+  document.querySelectorAll("#wordflow .gap.bp, #wordflow .gap.bp-missing")
+    .forEach(g => g.classList.remove("bp", "diff", "bp-missing"));
+}
+
+function markPlanBreaks(segments, bestSet) {
+  clearBreakMarks();
+  if (!bestSet) return;
+  const cur = planBreakSet(segments);
+  for (const g of document.querySelectorAll("#wordflow [data-gap]")) {
+    const k = +g.dataset.gap;
+    if (g.classList.contains("must") || g.classList.contains("no")) continue;  // 不覆盖用户硬约束标记
+    if (cur.has(k)) {
+      g.classList.add("bp");
+      if (!bestSet.has(k)) g.classList.add("diff");
+    } else if (bestSet.has(k)) {
+      g.classList.add("bp-missing");  // 最优方案在此断开, 当前方案没有
+    }
+  }
+}
+
+function lockListHtml(c) {
+  if (!lockMap.size) return "";
+  // 后端冲突归属的问题锁(按词范围匹配)
+  const bad = c && c.kind === "lock" && c.lock ? lockKey(c.lock.word_range[0], c.lock.word_range[1]) : null;
+  const items = [...lockMap.values()].sort((a, b) => a.wa - b.wa).map(lk => {
+    const key = lockKey(lk.wa, lk.wb);
+    const isBad = key === bad;
+    const name = isBad ? `锁定段(词 ${lk.wa}–${lk.wb})⚠` : `锁定段(词 ${lk.wa}–${lk.wb})`;
+    const detail = lk.lb == null ? "单行" : `词 ${lk.lb - 1} 与词 ${lk.lb} 之间换行`;
+    return `<li class="${isBad ? "badlock" : ""}"><span class="lkname">🔒 ${escapeHtml(name)}</span>
+      <span class="hint" style="margin:0">${escapeHtml(detail)}</span>
+      <button type="button" data-unlocklock="${key}" style="margin-left:auto">解锁</button></li>`;
+  }).join("");
+  return `<p style="margin:10px 0 0;font-size:12px;color:var(--dim)">当前锁定段(锁定状态已保留,可直接解锁修正):</p><ul class="locklist">${items}</ul>`;
+}
+
+function render(data) {
+  curData = data;
+  altPlans = data.ok && data.alternatives ? data.alternatives : null;
+  altIndex = 0;
+  const el = $("result");
+  if (!data.ok) {
+    clearReview();
+    clearBreakMarks();
+    const c = data.conflict;
+    const b = c.boundary;
+    const btxt = b
+      ? `<p>冲突边界:词 <b>${b.index - 1}</b> 与词 <b>${b.index}</b> 之间 · <b>${b.type === "must_break" ? "必须断开" : "禁止断开"}</b></p>`
+      : "";
+    const lkHead = c.kind === "lock"
+      ? `<p style="color:var(--lock);font-weight:600">🔒 锁定段失效 — 请修正后重算,或在下方解锁</p>` : "";
+    el.innerHTML = `<div class="conflict">
+      <h3>无可行方案 — 首个冲突区间</h3>
+      ${lkHead}${btxt}
+      <p>词下标 <b>${c.word_range[0]}–${c.word_range[1]}</b> · ${fmt(c.start)} → ${fmt(c.end)}</p>
+      <p>「${escapeHtml(c.text)}」</p>
+      <ul>${c.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join("")}</ul>
+      ${lockListHtml(c)}
+    </div>`;
+    // 高亮冲突: 冲突边界标记 + 冲突词区间(输入与标记保持不变)
+    if (b) {
+      const g = document.querySelector(`[data-gap="${b.index}"]`);
+      if (g) g.classList.add("clash");
+    }
+    document.querySelectorAll("#wordflow .w").forEach(w => {
+      const i = +w.dataset.w;
+      if (i >= c.word_range[0] && i <= c.word_range[1]) w.classList.add("bad");
+    });
+    // 问题锁定段额外高亮(词范围+边界), 其余锁定段保持青色标记
+    if (c.kind === "lock" && c.lock) {
+      markLocks(lockKey(c.lock.word_range[0], c.lock.word_range[1]));
+    }
+    return;
+  }
+  renderPlan(0);
+}
+
+function renderPlan(idx) {
+  altIndex = idx;
+  const el = $("result");
+  const segments = altPlans ? altPlans[idx].segments : curData.segments;
+  const totalCost = altPlans ? altPlans[idx].total_cost : curData.total_cost;
+  const multi = altPlans && altPlans.length > 1;
+  const bestSet = multi ? planBreakSet(altPlans[0].segments) : null;
+  markPlanBreaks(segments, bestSet);
+
+  let switcher = "";
+  let legend = "";
+  if (altPlans) {
+    if (!multi) {
+      switcher = `<div class="alts"><span class="nomore">只有一个可行方案,无更多备选</span></div>`;
+    } else {
+      switcher = `<div class="alts">` + altPlans.map((a, i) => {
+        const active = i === altIndex;
+        const label = i === 0 ? "最优方案" : `方案 ${i + 1}`;
+        const extra = i === 0 ? "" : ` <span class="altinfo">+${a.cost_delta}</span>`;
+        return `<button type="button" class="alt${active ? " active" : ""}" data-alt="${i}">${label}${extra}</button>`;
+      }).join("") + `</div>`;
+      legend = `<div class="altlegend">
+        <span class="row" style="gap:4px"><span class="gap bp"></span>当前方案断点(与最优一致)</span>
+        <span class="row" style="gap:4px"><span class="gap bp diff"></span>与最优方案不同的断点</span>
+        <span class="row" style="gap:4px"><span class="gap bp-missing"></span>最优有、当前没有的断点</span>
+        <span class="row" style="gap:4px"><span class="gap lkend"></span>锁定段边界</span>
+      </div>`;
+    }
+  }
+
+  const lockCount = [...lockMap.keys()].length;
+  const lockTxt = lockCount
+    ? ` · <span style="color:var(--lock)">🔒 ${lockCount} 段已锁定,仅优化其余区间</span>` : "";
+  const deltaTxt = multi ? (idx === 0 ? " · 最优" : ` · 相对最优 +${altPlans[idx].cost_delta}`) : "";
+  el.innerHTML = switcher + legend +
+    `<div class="total">共 <b>${segments.length}</b> 段 · 总代价 <b>${totalCost}</b>${deltaTxt}${lockTxt}</div>` +
+    segments.map((s, i) => {
+      // 段首断点(词 s.word_range[0] 左侧间隙)与最优方案不同则突出
+      const diff = multi && s.word_range[0] > 0 && !bestSet.has(s.word_range[0]);
+      const [wa, wb] = s.word_range;
+      const isLocked = !!s.locked || lockMap.has(lockKey(wa, wb));
+      const tag = diff ? ` <span class="badtag">断点不同于最优</span>` : "";
+      const ltag = isLocked ? ` <span class="locktag">🔒 已锁定</span>` : "";
+      const lbAttr = s.line_break == null ? "" : s.line_break;
+      const lockBtn = `<button type="button" class="lockbtn${isLocked ? " on" : ""}"
+        data-lock="${wa}-${wb}" data-locked="${isLocked ? 1 : 0}" data-lb="${lbAttr}"
+        title="${isLocked ? "解锁该段,重算后恢复优化" : "锁定该段的词范围与内部换行,重算时保持不变"}">
+        ${isLocked ? "解锁" : "🔒 锁定"}</button>`;
+      return `<div class="seg${diff ? " diffbreak" : ""}${isLocked ? " locked" : ""}" data-seg="${i}">
+      <div class="meta"><span>#${i + 1}</span><span>${fmt(s.start)} → ${fmt(s.end)}</span>
+        <span>${s.duration}s</span><span>${s.cps} 字/秒</span><span>词 ${wa}–${wb}</span>${tag}${ltag}${lockBtn}</div>
+      <div class="lines">${markedLinesHtml(s, i)}<\/div>
+      <div class="cost"><span>镜头 <b>${s.cost.shot}</b></span><span>行长 <b>${s.cost.imbalance}</b></span>
+        <span>停顿 <b>${s.cost.pause}</b></span><span>合计 <b>${s.cost.total}</b></span></div>
+    </div>`;
+    }).join("");
+}
+
+// ── 术语一致性审校 ──
+let lastWords = [];
+let reviewData = null;      // 最近一次审校响应
+let reviewSig = "";         // 审校所针对方案的签名(word_range+line_break)
+let reviewRunId = 0;
+let reviewTimer = null;
+
+function parseGlossary(text) {
+  text = text.trim();
+  if (!text) return [];
+  if (text.startsWith("[")) {
+    const arr = JSON.parse(text);
+    if (!Array.isArray(arr)) throw new Error("术语 JSON 必须是数组");
+    return arr.map(o => ({
+      canonical: String(o.canonical ?? ""),
+      variants: Array.isArray(o.variants) ? o.variants.map(String) : [],
+    }));
+  }
+  const terms = [];
+  text.split("\n").forEach((line, i) => {
+    line = line.trim();
+    if (!line) return;
+    const m = line.match(/^([^=:]*)([=:])(.*)$/);
+    if (!m) {
+      throw new Error(`术语第 ${i + 1} 行格式错误,应为「规范写法 = 变体…」: ${line}`);
+    }
+    const canonical = m[1].trim();
+    const variants = m[3].split(/[,，;；|｜、/]/).map(s => s.trim()).filter(Boolean);
+    terms.push({ canonical, variants });
+  });
+  return terms;
+}
+
+function currentSegments() {
+  if (!curData || !curData.ok) return null;
+  return altPlans ? altPlans[altIndex].segments : curData.segments;
+}
+
+function planSig(segments) {
+  return JSON.stringify(segments.map(s => [s.word_range[0], s.word_range[1], s.line_break]));
+}
+
+function markedLineHtml(text, hits) {
+  if (!hits || !hits.length) return escapeHtml(text);
+  let html = "";
+  let pos = 0;
+  for (const h of hits) {
+    if (h.start < pos) continue;  // 兜底: 命中非重叠
+    html += escapeHtml(text.slice(pos, h.start));
+    const tip = h.kind === "variant"
+      ? `非规范变体,规范写法: ${h.canonical}` : `规范写法: ${h.canonical}`;
+    html += `<mark class="tm${h.kind === "variant" ? " var" : ""}" title="${escapeHtml(tip)}">`
+          + escapeHtml(text.slice(h.start, h.end)) + "</mark>";
+    pos = h.end;
+  }
+  return html + escapeHtml(text.slice(pos));
+}
+
+function markedLinesHtml(seg, segIndex) {
+  const lines = seg.lines;
+  let seghits = null;
+  if (reviewData && reviewSig === planSig(currentSegments())) {
+    const rs = reviewData.segments.find(x => x.index === segIndex);
+    if (rs && rs.lines.length === lines.length
+        && rs.lines.every((l, li) => l.text === lines[li])) {
+      seghits = rs.lines.map(l => l.hits);
+    }
+  }
+  return lines.map((l, li) =>
+    `<div>${seghits ? markedLineHtml(l, seghits[li]) : escapeHtml(l)}</div>`
+  ).join("<br>");
+}
+
+function clearReview(message) {
+  reviewData = null;
+  reviewSig = "";
+  $("reviewPanel").style.display = "none";
+  $("reviewError").textContent = message || "";
+}
+
+function scheduleReview() {
+  clearTimeout(reviewTimer);
+  reviewTimer = setTimeout(runReview, 300);
+}
+
+async function runReview() {
+  const runId = ++reviewRunId;
+  const segments = currentSegments();
+  let terms;
+  try {
+    terms = parseGlossary($("glossary").value);
+  } catch (e) {
+    clearReview();
+    $("reviewError").textContent = e.message;
+    renderPlan(altIndex);
+    return;
+  }
+  if (!terms.length || !segments || !lastWords.length) {
+    clearReview();
+    renderPlan(altIndex);
+    return;
+  }
+  const sig = planSig(segments);
+  const res = await fetch("/api/terms/review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      words: lastWords,
+      segments: segments.map(s => ({ word_range: s.word_range, line_break: s.line_break })),
+      terms,
+    }),
+  });
+  const data = await res.json();
+  if (runId !== reviewRunId) return;  // 已有更新的审校请求, 丢弃过期响应
+  if (!res.ok) {
+    reviewData = null;
+    reviewSig = "";
+    let msg;
+    const d = data.detail;
+    if (d && typeof d === "object") {
+      if (d.type === "empty_canonical") {
+        msg = `术语表第 ${d.term_index + 1} 项(序号 ${d.term_index + 1})的规范写法为空,请补充规范写法;输入已保留。`;
+      } else if (d.type === "variant_conflict") {
+        msg = `变体归属冲突:归一写法「${d.surface}」同时归属于术语表第 ${d.term_indices.map(i => i + 1).join("、")} 项(序号 ${d.term_indices.map(i => i + 1).join("、")}),请删除或修改其中一个;输入已保留。`;
+      } else {
+        msg = JSON.stringify(d);
+      }
+    } else {
+      msg = String(d || "审校请求失败");
+    }
+    $("reviewPanel").style.display = "none";
+    $("reviewError").textContent = msg;
+    renderPlan(altIndex);
+    return;
+  }
+  $("reviewError").textContent = "";
+  reviewData = data;
+  reviewSig = sig;
+  renderReview(terms);
+  renderPlan(altIndex);
+}
+
+function renderReview(terms) {
+  $("reviewPanel").style.display = "";
+  const sm = reviewData.summary;
+  const rows = sm.by_term.map(r => {
+    const vs = r.variants.map(v => `<span class="v">${escapeHtml(v.variant)} ×${v.count}</span>`).join("、");
+    return `<tr><td><b>${escapeHtml(r.canonical)}</b></td><td>${r.hits}</td>
+      <td style="color:var(--ok)">${r.canonical_hits}</td>
+      <td>${r.variant_hits ? `<b class="v">${r.variant_hits}</b>${vs ? `　${vs}` : ""}` : 0}</td></tr>`;
+  }).join("");
+  const table = rows
+    ? `<table class="termtbl"><thead><tr><th>规范写法</th><th>命中</th><th>规范次数</th><th>变体次数</th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<div class="hint" style="margin-top:6px">术语表中的术语在当前方案中均未出现。</div>`;
+  const items = reviewData.inconsistencies.map((it, i) => {
+    const seg = reviewData.segments[it.segment_index];
+    const lineText = seg ? seg.lines[it.line - 1].text : "";
+    const ctx = markedLineHtml(lineText,
+      (seg.lines[it.line - 1].hits || []).filter(h => h.start === it.start && h.end === it.end && h.term_index === it.term_index));
+    return `<li data-seg="${it.segment_index}" title="点击定位到第 ${it.segment_index + 1} 段">
+      <span class="hint">#${it.segment_index + 1} 段 · 第 ${it.line} 行</span>
+      <span class="vr">${escapeHtml(it.variant)}</span> → <span class="ar">${escapeHtml(it.canonical)}</span>
+      <div style="margin-top:3px">「${ctx}」</div></li>`;
+  }).join("");
+  const inc = items
+    ? `<div class="hint" style="margin-top:10px">不一致项(非规范变体,点击定位):</div><ul class="trlist">${items}</ul>`
+    : `<div style="color:var(--ok);font-size:12px;margin-top:10px">✓ 未发现非规范变体,术语用法一致。</div>`;
+  $("reviewResult").innerHTML = `
+    <div class="trsum">
+      <span class="chip">字幕段 <b>${sm.segments}</b></span>
+      <span class="chip">命中 <b>${sm.hits}</b></span>
+      <span class="chip ok">规范 <b>${sm.canonical_hits}</b></span>
+      <span class="chip bad">变体 <b>${sm.variant_hits}</b></span>
+      <button type="button" class="ghost" id="downloadReview" style="margin-left:auto;padding:4px 12px;font-size:12px">下载审校 JSON</button>
+    </div>
+    ${table}${inc}`;
+}
+
+$("reviewResult").addEventListener("click", e => {
+  if (e.target.closest("#downloadReview")) {
+    let terms = [];
+    try { terms = parseGlossary($("glossary").value); } catch (_) {}
+    const payload = Object.assign({
+      generated_at: new Date().toISOString(),
+      terms,
+    }, reviewData);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "terminology-review.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    return;
+  }
+  const li = e.target.closest("[data-seg]");
+  if (li) {
+    const el = document.querySelector(`#result .seg[data-seg="${li.dataset.seg}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.remove("flash");
+      void el.offsetWidth;
+      el.classList.add("flash");
+    }
+  }
+});
+
+$("glossary").addEventListener("input", scheduleReview);
+$("fillTermsExample").onclick = () => {
+  $("glossary").value = TERMS_EXAMPLE;
+  scheduleReview();
+};
+
+// ── 译文对齐 ──
+let alignData = null;       // 最近一次成功对齐响应(供下载 SRT)
+let alignRunId = 0;
+let alignTimer = null;
+
+function scheduleAlign() {
+  clearTimeout(alignTimer);
+  alignTimer = setTimeout(runAlign, 300);
+}
+
+async function runAlign() {
+  const runId = ++alignRunId;
+  const segments = currentSegments();   // 当前选中方案; 无方案(冲突/未计算)时为 null
+  const raw = $("translation").value;
+  const hasTgt = raw.split("\n").some(l => l.trim());
+  if (!hasTgt && (!segments || !segments.length)) {
+    alignData = null;
+    $("downloadSrt").disabled = true;
+    $("alignResult").innerHTML = '<span class="hint">粘贴译文后自动对齐。</span>';
+    return;
+  }
+  const res = await fetch("/api/align", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      words: lastWords,
+      segments: (segments || []).map(s => ({ word_range: s.word_range, line_break: s.line_break })),
+      translation: raw,
+    }),
+  });
+  const data = await res.json();
+  if (runId !== alignRunId) return;  // 已有更新的对齐请求, 丢弃过期响应
+  if (!res.ok) {
+    alignData = null;
+    $("downloadSrt").disabled = true;
+    $("alignResult").innerHTML = `<div class="error">${escapeHtml(String(data.detail || "对齐请求失败"))}</div>`;
+    return;
+  }
+  renderAlign(data);
+}
+
+function renderAlign(data) {
+  const el = $("alignResult");
+  if (!data.ok) {
+    // 任一侧为空或无法完整覆盖: 提示首个未覆盖位置, 输入保留在输入框中
+    alignData = null;
+    $("downloadSrt").disabled = true;
+    const e = data.error || {};
+    const title = { empty_source: "源侧为空", empty_translation: "译文为空",
+                    no_cover: "无法完整覆盖" }[e.type] || "无法对齐";
+    el.innerHTML = `<div class="anotice"><h3>⚠ ${title}</h3>
+      <p>${escapeHtml(e.message || "对齐失败")}</p></div>`;
+    return;
+  }
+  alignData = data;
+  $("downloadSrt").disabled = !data.groups.length;
+  if (!data.groups.length) {
+    el.innerHTML = '<span class="hint">粘贴译文后自动对齐。</span>';
+    return;
+  }
+  el.innerHTML = `<div class="total">共 <b>${data.groups.length}</b> 组 · 总代价 <b>${data.total_cost}</b>` +
+    `<span class="hint" style="margin:0 0 0 8px">源 ${data.src_chars} / 译 ${data.tgt_chars} 字符(去空白)</span></div>` +
+    data.groups.map(g => {
+      const ss = g.src_segments, tt = g.tgt_lines;
+      const srcMap = ss.length > 1 ? `源段 #${ss[0] + 1}–#${ss[ss.length - 1] + 1}` : `源段 #${ss[0] + 1}`;
+      const tgtMap = tt.length > 1 ? `译文第 ${tt[0] + 1}–${tt[tt.length - 1] + 1} 行` : `译文第 ${tt[0] + 1} 行`;
+      return `<div class="ag">
+      <div class="meta"><span class="amap k${g.kind.replace(":", "")}">${g.kind}</span>
+        <span>#${g.index + 1}</span><span>${fmt(g.start)} → ${fmt(g.end)}</span>
+        <span>${srcMap} ↔ ${tgtMap}</span></div>
+      <div class="aline"><span class="tag">原文</span><span>${escapeHtml(g.src_text)}</span></div>
+      <div class="aline"><span class="tag">译文</span><span>${escapeHtml(g.tgt_text)}</span></div>
+      <div class="acost"><span>占比差 <b>${g.ratio_diff}</b></span>
+        <span>句末标点 ${g.punct_mismatch ? '<b class="pm">不一致 +0.15</b>' : "一致"}</span>
+        <span>代价 <b>${g.cost}</b></span></div>
+    </div>`;
+    }).join("");
+}
+
+function srtTime(t) {
+  const ms = Math.max(0, Math.round(t * 1000));
+  const p = (v, l) => String(v).padStart(l, "0");
+  return `${p(Math.floor(ms / 3600000), 2)}:${p(Math.floor(ms / 60000) % 60, 2)}:` +
+         `${p(Math.floor(ms / 1000) % 60, 2)},${p(ms % 1000, 3)}`;
+}
+
+$("downloadSrt").onclick = () => {
+  if (!alignData || !alignData.groups || !alignData.groups.length) return;
+  // 每个对齐组一条字幕: 时间取首尾源段范围, 组内原文与译文各自合并为一行
+  const cues = alignData.groups.map((g, i) =>
+    `${i + 1}\n${srtTime(g.start)} --> ${srtTime(g.end)}\n${g.src_text}\n${g.tgt_text}\n`);
+  const blob = new Blob(["\ufeff" + cues.join("\n")], { type: "text/srt;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "bilingual.srt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+$("translation").addEventListener("input", scheduleAlign);
+$("fillTransExample").onclick = () => {
+  $("translation").value = TRANS_EXAMPLE;
+  scheduleAlign();
+};
+
+const TERMS_EXAMPLE = `咱们 = 我们
+动态规划 = DP, 动态 规划`;
+
+const TRANS_EXAMPLE = `Today we look at a very important example.
+First we need to understand
+the core idea of dynamic programming.`;
+
+const EXAMPLE = `00:00:00.500 00:00:00.900 我们
+00:00:00.900 00:00:01.200 今天
+00:00:01.200 00:00:01.600 来看
+00:00:01.600 00:00:01.900 一个
+00:00:02.100 00:00:02.600 非常重要
+00:00:02.600 00:00:02.900 的
+00:00:02.900 00:00:03.300 例子
+00:00:04.800 00:00:05.100 首先
+00:00:05.100 00:00:05.500 我们
+00:00:05.500 00:00:05.900 需要
+00:00:05.900 00:00:06.300 理解
+00:00:06.300 00:00:06.800 动态规划
+00:00:06.800 00:00:07.100 的
+00:00:07.100 00:00:07.500 核心
+00:00:07.500 00:00:07.900 思想`;
+
+$("fillExample").onclick = () => {
+  $("words").value = EXAMPLE;
+  $("phrases").value = "动态规划";
+  $("shots").value = "00:00:04.500\n00:00:08.000";
+  schedule();
+};
+
+for (const id of ["words", "phrases", "shots", "alternatives"]) $(id).addEventListener("input", schedule);
+for (const id of ["max_chars_per_line", "max_cps", "min_duration", "max_duration"]) $(id).addEventListener("input", schedule);
+for (const id of ["w_shot", "w_imbalance", "w_pause"]) $(id).addEventListener("input", () => {
+  $(id + "_v").textContent = parseFloat($(id).value).toFixed(1);
+  schedule();
+});
+</script>
+</body>
+</html>

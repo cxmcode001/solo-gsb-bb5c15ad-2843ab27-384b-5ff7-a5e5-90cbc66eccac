@@ -8,9 +8,10 @@ from pydantic import BaseModel, Field
 
 from .alignment import align_translation
 from .segmenter import Config, solve
+from .speakers import SpeakerError, assign_speakers
 from .terminology import TermError, review_terms
 
-app = FastAPI(title="字幕断句", version="1.5.0")
+app = FastAPI(title="字幕断句", version="1.6.0")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -77,6 +78,34 @@ class AlignRequest(BaseModel):
     translation: str = ""
 
 
+class SpeakerSegmentIn(BaseModel):
+    """当前选中的断句方案中的一段: 词范围(标注据此还原段时间; line_break 可省略)。"""
+    word_range: list[int] = Field(min_length=2, max_length=2)
+    line_break: int | None = None
+
+
+class SpeakerIntervalIn(BaseModel):
+    """说话人区间: 开始 结束 说话人(秒)。"""
+    start: float
+    end: float
+    speaker: str
+
+
+class SpeakerOverrideIn(BaseModel):
+    """人工覆盖: 强制某段为指定说话人; speaker 为 null 表示强制 unknown。"""
+    index: int
+    speaker: str | None = None
+
+
+class SpeakerRequest(BaseModel):
+    words: list[WordIn]
+    segments: list[SpeakerSegmentIn] = Field(default_factory=list)
+    intervals: list[SpeakerIntervalIn] = Field(default_factory=list)
+    overrides: list[SpeakerOverrideIn] = Field(default_factory=list)
+    switch_penalty: float = 0.5
+    review_threshold: float = 0.6
+
+
 @app.post("/api/segment")
 def segment(req: SegmentRequest):
     cfg_fields = {k: v for k, v in req.config.items() if k in Config.__dataclass_fields__}
@@ -112,6 +141,23 @@ def align(req: AlignRequest):
             [s.model_dump() for s in req.segments],
             req.translation,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/speakers/assign")
+def speakers_assign(req: SpeakerRequest):
+    try:
+        return assign_speakers(
+            [w.model_dump() for w in req.words],
+            [s.model_dump() for s in req.segments],
+            [it.model_dump() for it in req.intervals],
+            switch_penalty=req.switch_penalty,
+            review_threshold=req.review_threshold,
+            overrides=[o.model_dump() for o in req.overrides],
+        )
+    except SpeakerError as e:
+        raise HTTPException(status_code=422, detail=e.payload)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

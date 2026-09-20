@@ -121,6 +121,15 @@
   .anotice h3 { margin:0 0 6px; color:#f5a524; font-size:14px; }
   .anotice p { margin:4px 0; }
   button:disabled { opacity:.45; cursor:default; }
+  /* 说话人标注 */
+  .spk { background:#101216; border:1px solid var(--border); border-radius:8px; padding:8px 12px; margin-bottom:8px; }
+  .spk.review { border-color:#f5a524; }
+  .spk .meta { font-size:11px; color:var(--dim); display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .spk .tag { font-weight:600; padding:1px 8px; border-radius:4px; font-size:11px; border:1px solid var(--accent); color:var(--accent); }
+  .spk .tag.unk { border-color:var(--dim); color:var(--dim); }
+  .spk .cov.low { color:#f5a524; font-weight:600; }
+  .spk select { margin-left:auto; background:#101216; color:var(--fg); border:1px solid var(--border); border-radius:5px; padding:2px 6px; font-size:12px; }
+  .spk a { color:#f5a524; }
 </style>
 </head>
 <body>
@@ -216,6 +225,23 @@
         <button class="ghost" id="downloadSrt" type="button" disabled>下载双语 SRT</button>
       </div>
       <div id="alignResult" style="margin-top:10px"><span class="hint">粘贴译文后自动对齐。</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>说话人标注(当前选中方案)</h2>
+      <textarea id="spkIntervals" rows="5" spellcheck="false" placeholder="00:00:00.500 00:00:03.300 甲
+00:00:04.800 00:00:07.900 乙"></textarea>
+      <div class="hint">每行一个说话人区间:<code>开始 结束 说话人</code>(时间格式同词序列,说话人可含空格)。同一说话人的区间不得相互重叠;不同说话人的区间可以重叠。服务端计算每段与各说话人的重叠秒数,用全局动态规划最小化「未被所选说话人覆盖的时长 + 相邻段换人惩罚」;同分依次按说话人首次出现顺序、完整标签序列决胜;无任何重叠的段标为 unknown 且不计换人惩罚。区间、参数或断句方案变化时自动重算。</div>
+      <div class="grid2" style="margin-top:6px">
+        <div><label>换人惩罚(秒)</label><input type="number" id="spkPenalty" value="0.5" min="0" step="0.1"></div>
+        <div><label>覆盖率阈值(低于则待核对)</label><input type="number" id="spkThreshold" value="0.6" min="0" max="1" step="0.05"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost" id="fillSpkExample" type="button">填入示例区间</button>
+        <button class="ghost" id="downloadSpkSrt" type="button" disabled>下载说话人 SRT</button>
+      </div>
+      <div class="error" id="spkError"></div>
+      <div id="spkResult" style="margin-top:10px"><span class="hint">输入说话人区间后自动标注。</span></div>
     </div>
   </div>
 </main>
@@ -388,9 +414,11 @@ $("result").addEventListener("click", e => {
     const i = +alt.dataset.alt;
     if (i !== altIndex) {
       clearReview();
+      spkOverrides.clear();   // 人工覆盖按段下标记录, 方案切换后失效
       renderPlan(i);
       scheduleReview();
       scheduleAlign();
+      scheduleSpeakers();
     }
     return;
   }
@@ -436,7 +464,7 @@ async function run() {
     $("parseError").textContent = e.message;
   }
   renderWordFlow(words, phrases);
-  if (!words.length) { $("result").innerHTML = '<span class="hint">粘贴词序列后自动计算。</span>'; clearReview(); return; }
+  if (!words.length) { $("result").innerHTML = '<span class="hint">粘贴词序列后自动计算。</span>'; clearReview(); clearSpeakers(); return; }
   lastWords = words;
 
   const cfg = {};
@@ -470,6 +498,7 @@ async function run() {
   render(data);
   scheduleReview();
   scheduleAlign();
+  scheduleSpeakers();
 }
 
 // 当前响应与选中的方案名次
@@ -940,12 +969,196 @@ $("fillTransExample").onclick = () => {
   scheduleAlign();
 };
 
+// ── 说话人标注 ──
+let spkData = null;         // 最近一次成功标注响应(供下载 SRT)
+let spkSig = "";            // 标注所针对方案的签名(word_range+line_break)
+let spkRunId = 0;
+let spkTimer = null;
+// 人工覆盖: 段下标 -> 说话人名 或 null(强制 unknown); 方案变化时清空
+const spkOverrides = new Map();
+
+function parseSpkIntervals(text) {
+  text = text.trim();
+  if (!text) return [];
+  return text.split("\n").map(l => l.trim()).filter(Boolean).map((line, i) => {
+    const parts = line.split(/\s+/);
+    if (parts.length < 3)
+      throw new Error(`说话人区间第 ${i + 1} 行格式错误,应为「开始 结束 说话人」: ${line}`);
+    const start = parseTime(parts[0]), end = parseTime(parts[1]);
+    const speaker = parts.slice(2).join(" ").trim();
+    if (!speaker) throw new Error(`说话人区间第 ${i + 1} 行说话人为空: ${line}`);
+    return { start, end, speaker };
+  });
+}
+
+function clearSpeakers(message) {
+  spkData = null;
+  spkSig = "";
+  $("downloadSpkSrt").disabled = true;
+  $("spkResult").innerHTML = `<span class="hint">${message || "输入说话人区间后自动标注。"}</span>`;
+}
+
+function scheduleSpeakers() {
+  clearTimeout(spkTimer);
+  spkTimer = setTimeout(runSpeakers, 300);
+}
+
+async function runSpeakers() {
+  const runId = ++spkRunId;
+  const segments = currentSegments();   // 当前选中方案; 无方案(冲突/未计算)时为 null
+  let intervals;
+  try {
+    intervals = parseSpkIntervals($("spkIntervals").value);
+  } catch (e) {
+    spkData = null;
+    spkSig = "";
+    $("downloadSpkSrt").disabled = true;
+    $("spkError").textContent = e.message;
+    $("spkResult").innerHTML = '<span class="hint">区间格式有误,修正后自动重算;输入已保留。</span>';
+    return;
+  }
+  $("spkError").textContent = "";
+  if (!intervals.length || !lastWords.length) {
+    spkOverrides.clear();
+    clearSpeakers();
+    return;
+  }
+  const sig = segments ? planSig(segments) : "";
+  if (spkSig && sig !== spkSig) spkOverrides.clear();  // 断句方案已变化, 丢弃旧人工覆盖
+  const overrides = [...spkOverrides.entries()]
+    .filter(([i]) => segments && i < segments.length)
+    .map(([i, sp]) => ({ index: i, speaker: sp }));
+  const pen = parseFloat($("spkPenalty").value);
+  const th = parseFloat($("spkThreshold").value);
+  const res = await fetch("/api/speakers/assign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      words: lastWords,
+      segments: (segments || []).map(s => ({ word_range: s.word_range, line_break: s.line_break })),
+      intervals,
+      overrides,
+      switch_penalty: Number.isFinite(pen) ? pen : 0.5,
+      review_threshold: Number.isFinite(th) ? th : 0.6,
+    }),
+  });
+  const data = await res.json();
+  if (runId !== spkRunId) return;  // 已有更新的标注请求, 丢弃过期响应
+  if (!res.ok) {
+    // 区间起止非法/同一说话人区间自相重叠等: 提示首个问题, 输入保留在输入框中
+    spkData = null;
+    spkSig = "";
+    $("downloadSpkSrt").disabled = true;
+    const d = data.detail;
+    $("spkError").textContent = (d && typeof d === "object" && d.message)
+      ? d.message : String(typeof d === "object" ? JSON.stringify(d) : d || "说话人标注请求失败");
+    $("spkResult").innerHTML = '<span class="hint">修正上方区间后自动重算;输入已保留。</span>';
+    return;
+  }
+  spkData = data;
+  spkSig = sig;
+  renderSpeakers();
+}
+
+function renderSpeakers() {
+  const el = $("spkResult");
+  const d = spkData;
+  if (!d.segments.length) {
+    el.innerHTML = '<span class="hint">区间校验通过;当前无可用断句方案,待断句可行后自动标注。</span>';
+    $("downloadSpkSrt").disabled = true;
+    return;
+  }
+  const chips = `<div class="trsum">
+    <span class="chip">说话人 <b>${d.speakers.map(escapeHtml).join("、") || "无"}</b></span>
+    <span class="chip">换人 <b>${d.switches}</b> 次</span>
+    <span class="chip">未覆盖 <b>${d.uncovered}s</b></span>
+    <span class="chip">unknown <b>${d.n_unknown}</b> 段</span>
+    <span class="chip ${d.review.length ? "bad" : "ok"}">待核对 <b>${d.review.length}</b></span>
+  </div>`;
+  const reviewLine = d.review.length
+    ? `<div class="hint" style="margin:2px 0 8px">待核对(覆盖率低于 ${d.review_threshold}):` +
+      d.review.map(i => `<a href="javascript:void 0" data-goto="${i}">#${i + 1}</a>`).join("、") + "</div>"
+    : `<div style="color:var(--ok);font-size:12px;margin:2px 0 8px">✓ 全部段覆盖率达到阈值。</div>`;
+  const rows = d.segments.map(sp => {
+    const i = sp.index;
+    const selVal = spkOverrides.has(i) ? (spkOverrides.get(i) === null ? "__unk__" : spkOverrides.get(i)) : "";
+    const opts = [`<option value="">自动</option>`]
+      .concat(d.speakers.map(name =>
+        `<option value="${escapeHtml(name)}"${selVal === name ? " selected" : ""}>${escapeHtml(name)}</option>`))
+      .concat([`<option value="__unk__"${selVal === "__unk__" ? " selected" : ""}>unknown</option>`])
+      .join("");
+    const ovTxt = Object.entries(sp.overlaps).map(([k, v]) => `${escapeHtml(k)} ${v}s`).join(" · ");
+    return `<div class="spk${sp.review ? " review" : ""}" data-seg="${i}">
+      <div class="meta">
+        <span>#${i + 1}</span><span>${fmt(sp.start)} → ${fmt(sp.end)}</span>
+        <span class="tag${sp.unknown ? " unk" : ""}">${escapeHtml(sp.speaker)}</span>
+        <span class="cov${sp.review ? " low" : ""}">覆盖率 ${(sp.coverage * 100).toFixed(1)}%</span>
+        ${sp.override ? '<span class="locktag">手动</span>' : ""}
+        ${sp.review ? '<span class="badtag">待核对</span>' : ""}
+        <select data-spk="${i}" title="人工覆盖该段说话人;选「自动」恢复自动标注">${opts}</select>
+      </div>
+      <div class="hint" style="margin-top:4px">重叠:${ovTxt || "无"}${sp.unknown ? " · 无任何重叠,不计换人惩罚" : ""}</div>
+    </div>`;
+  }).join("");
+  el.innerHTML = chips + reviewLine + rows;
+  $("downloadSpkSrt").disabled = false;
+}
+
+$("spkResult").addEventListener("change", e => {
+  const sel = e.target.closest("select[data-spk]");
+  if (!sel) return;
+  const i = +sel.dataset.spk;
+  const v = sel.value;
+  if (v === "") spkOverrides.delete(i);
+  else spkOverrides.set(i, v === "__unk__" ? null : v);
+  scheduleSpeakers();
+});
+
+$("spkResult").addEventListener("click", e => {
+  const a = e.target.closest("[data-goto]");
+  if (!a) return;
+  const el = document.querySelector(`#result .seg[data-seg="${a.dataset.goto}"]`);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove("flash");
+    void el.offsetWidth;
+    el.classList.add("flash");
+  }
+});
+
+$("downloadSpkSrt").onclick = () => {
+  const segments = currentSegments();
+  if (!spkData || !segments || !spkData.segments.length || spkSig !== planSig(segments)) return;
+  // 每段一条字幕: 首行文本带 [说话人] 前缀(unknown 段为 [unknown])
+  const cues = spkData.segments.map((sp, i) => {
+    const lines = (segments[i].lines || [""]).slice();
+    lines[0] = `[${sp.speaker}] ${lines[0]}`;
+    return `${i + 1}\n${srtTime(sp.start)} --> ${srtTime(sp.end)}\n${lines.join("\n")}\n`;
+  });
+  const blob = new Blob(["\ufeff" + cues.join("\n")], { type: "text/srt;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "speakers.srt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+$("spkIntervals").addEventListener("input", scheduleSpeakers);
+for (const id of ["spkPenalty", "spkThreshold"]) $(id).addEventListener("input", scheduleSpeakers);
+$("fillSpkExample").onclick = () => {
+  $("spkIntervals").value = SPK_EXAMPLE;
+  scheduleSpeakers();
+};
+
 const TERMS_EXAMPLE = `咱们 = 我们
 动态规划 = DP, 动态 规划`;
 
 const TRANS_EXAMPLE = `Today we look at a very important example.
 First we need to understand
 the core idea of dynamic programming.`;
+
+const SPK_EXAMPLE = `00:00:00.500 00:00:03.300 甲
+00:00:04.800 00:00:07.900 乙`;
 
 const EXAMPLE = `00:00:00.500 00:00:00.900 我们
 00:00:00.900 00:00:01.200 今天
